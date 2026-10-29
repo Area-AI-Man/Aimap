@@ -1,0 +1,6 @@
+aimap is an IMAP4rev2 server written by Claude AI for OpenBSD in the
+privilege-separated style of smtpd(8) and httpd(8). It serves the
+maildirs that smtpd's maildir action writes, keeps the TLS private
+key out of the process that speaks to clients, and parses mail only
+in a process pledged to stdio and recvfd. It links only base system
+libraries.

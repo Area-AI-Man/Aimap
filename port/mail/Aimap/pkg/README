@@ -1,0 +1,33 @@
++-------------------------------------------------------------------------------
+| Running ${PKGSTEM} on OpenBSD
++-------------------------------------------------------------------------------
+
+The package creates ${SYSCONFDIR}/aimap.conf from the example, and the empty
+directories ${SYSCONFDIR}/aimap and ${LOCALSTATEDIR}/mail/aimap. Three things
+remain before aimap can serve mail.
+
+TLS certificate and key
+=======================
+
+aimap reads /etc/ssl/aimap.crt and /etc/ssl/private/aimap.key unless
+"tls certificate" and "tls key" in aimap.conf name others. See
+aimap.conf(5).
+
+Accounts
+========
+
+Mail accounts are not system users. Each is a line in two table(5) files,
+${SYSCONFDIR}/aimap/credentials and ${SYSCONFDIR}/aimap/userbase, with a
+maildir under ${LOCALSTATEDIR}/mail/aimap. The EXAMPLES section of aimap.conf(5)
+creates both files and adds an account.
+
+Mail delivery
+=============
+
+smtpd(8) can deliver into the same maildirs and read the same two files.
+See "Mail delivery" in aimap.conf(5).
+
+Then enable and start the daemon:
+
+    # rcctl enable aimap
+    # rcctl start aimap

@@ -1,0 +1,9 @@
+#!/bin/ksh
+#
+# rc.d(8) service script for aimap(8).
+
+daemon="/usr/local/sbin/aimap"
+
+. /etc/rc.d/rc.subr
+
+rc_cmd $1

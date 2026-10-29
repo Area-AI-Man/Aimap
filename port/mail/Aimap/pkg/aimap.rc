@@ -1,0 +1,12 @@
+#!/bin/ksh
+
+daemon="${TRUEPREFIX}/sbin/aimap"
+
+. /etc/rc.d/rc.subr
+
+rc_configtest() {
+	# use rc_exec here since daemon_flags may contain arguments with spaces
+	rc_exec "${daemon} -n ${daemon_flags}"
+}
+
+rc_cmd $1

@@ -1,0 +1,216 @@
+.Dd $Mdocdate: October 16 2026 $
+.Dt AIMAP 8
+.Os
+.Sh NAME
+.Nm aimap
+.Nd Internet Message Access Protocol (IMAP) daemon
+.Sh SYNOPSIS
+.Nm
+.Op Fl dnVv
+.Op Fl D Ar macro Ns = Ns Ar value
+.Op Fl f Ar file
+.Sh DESCRIPTION
+.Nm
+is an Internet Message Access Protocol
+.Pq IMAP
+daemon implementing a subset of IMAP4rev2, as defined by RFC 9051,
+and the RFC 7162 CONDSTORE and QRESYNC extensions.
+It serves mail stored in maildir format, delivered by
+.Xr smtpd 8
+as described in
+.Xr aimap.conf 5 ,
+and rewrites each new message with the CRLF line endings RFC 5322
+requires before any client sees it.
+.Pp
+Message files that other software places in a mailbox's
+.Pa cur
+or
+.Pa new
+directory, such as a maildir brought from another server, are given
+UIDs the next time the mailbox is selected or its status is read,
+keeping the flags in their names.
+A mailbox whose
+.Pa aimap.index
+is lost is rebuilt the same way, with a new
+.Li UIDVALIDITY .
+A file found in
+.Pa cur
+with the deleted flag
+.Pq Sq T
+is left out unless the mailbox has no index, since it may be a
+message that was expunged but could not be removed.
+.Pp
+By default,
+.Nm
+listens on port 143, where clients may upgrade to TLS with
+.Li STARTTLS ,
+and on port 993 with implicit TLS, as recommended by RFC 8314.
+Authentication is
+.Li AUTH=PLAIN
+only, and is refused until TLS is established.
+Users are not system accounts; they are listed in the credentials and
+userbase files described in
+.Xr aimap.conf 5 .
+.Pp
+Each user's mailboxes form a single flat namespace:
+.Li INBOX
+is the account's maildir, and each other mailbox is a maildir in a
+subdirectory of it with the mailbox's name.
+.Pp
+.Nm
+requires the
+.Sy _aimap
+and
+.Sy _aimapauth
+users to exist, and
+.Pa /var/empty
+to be a directory owned by root and writable by neither group nor other.
+It logs to
+.Xr syslogd 8
+with the
+.Dv LOG_MAIL
+facility and rereads its configuration file on
+.Dv SIGHUP .
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl D Ar macro Ns = Ns Ar value
+Define
+.Ar macro
+to be set to
+.Ar value
+on the command line.
+Overrides the definition of
+.Ar macro
+in the configuration file.
+.It Fl d
+Do not daemonize.
+If this option is specified,
+.Nm
+will run in the foreground and log to
+.Em stderr .
+.It Fl f Ar file
+Use
+.Ar file
+as the configuration file, instead of the default
+.Pa /etc/aimap.conf .
+.It Fl n
+Configtest mode.
+Only check the configuration file for validity.
+.It Fl V
+Print the version and exit.
+.It Fl v
+Produce more verbose logging.
+Multiple
+.Fl v
+options increase the verbosity.
+.El
+.Sh FILES
+.Bl -tag -width "/etc/ssl/private/aimap.keyXX" -compact
+.It Pa /etc/aimap.conf
+Default configuration file.
+.It Pa /etc/aimap/credentials
+Default credentials file.
+.It Pa /etc/aimap/userbase
+Default userbase file.
+.It Pa /etc/ssl/aimap.crt
+Default TLS certificate.
+.It Pa /etc/ssl/private/aimap.key
+Default TLS private key.
+.It Pa /var/empty
+.Xr chroot 2
+directory of the listener, keymgr and parser processes.
+.It Pa /var/mail/aimap
+Default mail spool.
+.It Pa aimap.index
+Index of a mailbox's messages, in each mailbox's maildir, with
+.Pa aimap.index.lock
+and
+.Pa aimap.index.tmp
+beside it.
+.It Pa aimap.subscriptions
+Subscribed mailboxes, at the root of each maildir, with
+.Pa aimap.subscriptions.lock
+and
+.Pa aimap.subscriptions.tmp
+beside it.
+While it is absent, every mailbox is subscribed.
+If it cannot be read, or holds a name that is not a valid mailbox name,
+.Li LSUB
+and
+.Li LIST
+(SUBSCRIBED)
+answer
+.Li NO .
+.It Pa aimap.uidvalidity
+Highest
+.Li UIDVALIDITY
+issued, at the root of each maildir.
+If it cannot be read or written, a value already issued may be issued
+again.
+.El
+.Sh SEE ALSO
+.Xr aimap.conf 5 ,
+.Xr smtpd 8 ,
+.Xr syslogd 8
+.Sh STANDARDS
+.Rs
+.%A A. Melnikov
+.%A B. Leiba
+.%D August 2021
+.%R RFC 9051
+.%T Internet Message Access Protocol (IMAP) - Version 4rev2
+.Re
+.Pp
+.Rs
+.%A A. Melnikov
+.%A D. Cridland
+.%A C. Newman
+.%D May 2014
+.%R RFC 7162
+.%T IMAP Extensions: Quick Flag Changes Resynchronization (CONDSTORE) and Quick Mailbox Resynchronization (QRESYNC)
+.Re
+.Sh HISTORY
+.Nm
+is a from-scratch IMAP server written by Claude AI, in
+the
+.Ox
+privilege-separation tradition of
+.Xr smtpd 8 .
+.Sh CAVEATS
+Commands, options and
+.Li FETCH
+items it does not support are refused with
+.Li BAD
+or
+.Li NO .
+.Pp
+.Li IDLE
+polls the selected mailbox, so new mail is reported within one
+.Ic idle poll
+interval.
+Files placed directly in
+.Pa cur
+are not noticed during
+.Li IDLE
+until something else changes the mailbox.
+.Pp
+One process serves all sessions of an account, so a
+.Li STORE ,
+.Li EXPUNGE ,
+.Li COPY
+or
+.Li MOVE
+over a very large mailbox delays the account's other sessions.
+.Pp
+If the process holding the TLS private key exits, new TLS handshakes
+fail until
+.Nm
+is restarted.
+.Pp
+.Pa tmp ,
+.Pa new ,
+.Pa cur
+and the maildir files under
+.Sx FILES
+cannot be used as mailbox names.

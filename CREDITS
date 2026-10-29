@@ -1,0 +1,173 @@
+Aimap: credits and lineage
+
+The notes below say what was borrowed from whom and why that copyright is carried.
+
+log.c
+-----
+This file's log_init()/log_procinit()/log_setverbose()/log_getverbose()/
+vlog()/logit()/log_warn()/log_warnx()/log_info()/log_debug()/fatal()/
+fatalx() API is the same daemon-logging idiom Henning Brauer wrote and
+that is carried, nearly verbatim, across essentially every privsep
+daemon in the OpenBSD base system (smtpd, bgpd, and many others all
+credit him in their own log.c). This file's implementation details
+(log_procname storage, log_init()'s parameters) are this project's own,
+but the API shape and name are that same shared idiom, so his copyright
+is carried forward here too, same rationale as parse.y's copyright
+chain.
+
+log.h
+-----
+The declarations here, log_init(), log_procinit(), log_setverbose(),
+log_getverbose(), log_warn(), log_warnx(), log_info(), log_debug(),
+logit(), vlog(), fatal() and fatalx(), have the names, argument types
+and return types of those in smtpd's log.h (usr.sbin/smtpd/log.h:26-55).
+That is the daemon-logging idiom Henning Brauer wrote and that smtpd,
+bgpd and most other privsep daemons in the OpenBSD base system carry
+his copyright for. smtpd's _r variants are not declared here. His
+copyright is carried forward for the same reason as log.c's.
+
+imsgev.c
+--------
+This file's name and its "struct imsgev" wrapper-around-imsgbuf+
+event(3) concept match Eric Faurot's imsgev.c in OpenBSD's ldapd
+(usr.sbin/ldapd/imsgev.c), not a generic/obvious name, so his copyright
+is carried forward here even though this file's actual function
+signatures and dispatch design (a caller-supplied raw libevent handler,
+vs. ldapd's callback+needfd model) were written independently and differ
+from his implementation.
+
+imsgev_add() below is the exception: it is a verbatim copy (up to
+whitespace and the choice of iev vs. iev->data as event_set()'s last
+argument) of the imsg_event_add() idiom shared across OpenBSD privsep
+daemons, traceable to usr.sbin/ospfd/ospfd.c:525-534 (Claudio Jeker
+2005, Esben Norby 2004, Henning Brauer 2003-2004) and copied with only
+that one-argument variation into dvmrpd.c, npppd.c, and rad.c. Their
+copyright is carried forward for that function specifically, same
+rationale as log.c's and parse.y's shared-idiom copyright chains.
+
+parent.c
+--------
+This file's boot-time peer-wiring handshake, setup_peer_send() and
+setup_done_send(), and the IMSG_SETUP_PEER/IMSG_SETUP_DONE message names
+they and aimap.h use, follows smtpd's setup_peers()/ setup_done()
+(usr.sbin/smtpd/smtpd.c:861-903) and its identically-named
+IMSG_SETUP_PEER/IMSG_SETUP_DONE enumerators (smtpd.h:212-213), which no
+other daemon in the OpenBSD base system defines under those names. The
+functions here are reworked onto aimap's own struct imsgev and multi-
+child bookkeeping rather than copied verbatim, but the message protocol
+and handshake shape are smtpd's.
+
+load_key_file()'s TLS key permission check, fstat(2), then st_uid
+!= 0 and st_mode & (S_IRWXU|S_IRWXG|S_IRWXO) & ~0740, reuses smtpd's
+ssl_load_key() check (usr.sbin/smtpd/ssl.c:132-145) verbatim for that
+mask and rejection order; only the fixed 0740 bound and the imsg
+delivery around it are this file's own.
+
+startups_should_drop() follows sshd's should_drop_connection()
+(usr.bin/ssh/sshd.c:545-564): it tests the count of unauthenticated
+connections against begin and full and the rate against 100, and
+computes the drop probability with the same four statements, which
+rises linearly from rate% at begin to 100% at full, compared against
+arc4random_uniform(100).
+So this file also carries sshd.c's copyright, Markus Friedl (2000,
+2001, 2002) and Niels Provos (2002), as a second header block with
+sshd.c's two-clause BSD licence text unchanged, as rad's frontend.c
+carries the WIDE Project's (usr.sbin/rad/frontend.c:22-49). Nothing in
+the snapshot says which of the two wrote should_drop_connection().
+
+parent_main() refuses to start unless argv[0] is an absolute path,
+because each child is started by executing the program again by that
+path. sshd makes the same requirement for the same reason
+(usr.bin/ssh/sshd.c:1408-1409, "sshd requires execution with an
+absolute path"), and re-executes itself by execv(saved_argv[0],
+saved_argv) (:511).
+
+listener.c
+----------
+The RSA_METHOD/EC_KEY_METHOD engine override below (keymgr_engine_
+init() and everything it installs) adapts smtpd's ca.c
+(rsa_engine_init()/ecdsa_engine_init()/rsae_priv_enc()/rsae_priv_
+dec()/ecdsae_do_sign(), ca.c:329-508) to aimap's own imsg conventions:
+the OpenSSL API shape leaves little room for independent structure, and
+this project's own licensing precedent (log.c, imsgev.c) already treats
+a borrow this close as needing the original author's copyright even
+where the implementation differs. keymgr_set_fake_keypair()'s two-
+line call shape is lifted from smtpd's smtp.c:187-194 (Gilles Chehade,
+Pierre-Yves Ritschard, Jacek Masiulaniec).
+
+keymgr_ecdsa_engine_init() makes the same EC_KEY_METHOD_new(),
+EC_KEY_METHOD_get_sign() and EC_KEY_METHOD_set_sign() sequence as
+libtls's tls_signer_ecdsa_method() (lib/libtls/tls_signer.c:453), so
+this file also carries Copyright (c) 2021 Eric Faurot, the copyright of
+that libtls file.
+
+keymgr.c
+--------
+This file's overall architecture, a dedicated process holding the real
+TLS private key, a "fake private key" installed in the TLS-terminating
+process instead, and a process-wide OpenSSL RSA_METHOD/EC_KEY_METHOD
+engine override that forwards every private-key operation here as a
+synchronous imsg round-trip, is smtpd's ca.c (Reyk Floeter, Gilles
+Chehade), ported to aimap's own imsg/privsep conventions rather than
+copied verbatim. The RSA_METHOD/ EC_KEY_METHOD engine-override code
+itself (the code this file's request/reply pair answers) lives in
+listener.c, not here; see the listener.c entry above for the matching
+attribution.
+
+keymgr_pubkey_hash() below additionally replicates, byte-for-byte,
+smtpd's ssl.c hash_x509()/ssl_pubkey_hash() algorithm (Pierre-Yves
+Ritschard, Reyk Floeter, Gilles Chehade): SHA256 of the certificate's
+DER-encoded SubjectPublicKeyInfo, formatted "SHA256:" plus lowercase
+hex. That exact format is what libtls's own (unexported)
+tls_cert_pubkey_hash() tags onto the fake key's OpenSSL ex_data slot 0
+at TLS-config time (lib/libtls/tls.c); this process's key lookup only
+works if it derives the identical string from the same certificate.
+Its hex-digit loop is also the loop in libtls's tls_hex_string()
+(lib/libtls/tls_conninfo.c:45), so this file also carries Copyright (c)
+2015 Joel Sing and Bob Beck, the copyright of that libtls file.
+
+parse.y
+-------
+These functions match functions in the parse.y files of OpenBSD
+base-system daemons, ignoring comments and white space: igetc(),
+lgetc(), lungetc(), findeol(), pushfile(), popfile(), yyerror(),
+check_file_secrecy(), kw_cmp(), symset() and symget() match ospfd's;
+cmdline_symset() matches ldapd's. yylex() is ospfd's with '*' allowed
+to start a word, and lookup() is ospfd's with aimap's keywords.
+The daemon named is the one the comparison found; other base-system
+parsers may carry the same text.
+
+table_line() follows smtpd's parse_table_line()
+(usr.sbin/smtpd/util.c:1103): the same steps, in the same order, to
+split a line into a key and a value. It skips leading white space,
+strips trailing white space, passes over empty and "#" lines, finds the
+end of the key with strcspn(), skips the separator and the white space
+after it with strspn(), and rejects an empty value. It is reworked to
+read one table form from a line the caller has already read, where
+smtpd's reads the line itself and handles lists and bracketed keys. The
+header lines for Eric Faurot (2012), Jacek Masiulaniec (2009) and Gilles
+Chehade (2008) are three of the four in util.c's header. The fourth,
+Markus Friedl, is already in this file's header, as 2001 where util.c
+has 2000, 2001. They are carried together because nothing in the
+snapshot says which of util.c's holders wrote parse_table_line().
+
+The "startups" default, 10:30:100, is sshd's MaxStartups default
+(usr.bin/ssh/servconf.c:333-338; sshd_config(5), "The default is
+10:30:100").
+
+The last six names in this file's header are the copyright block of
+ospfd's parse.y, which lists those six and no others. This file's
+grammar and domain-specific rules are original; those six names are
+carried forward for the shared parser-skeleton lineage only.
+
+mbox_manage.c
+-------------
+store_space_ok() follows smtpd's fsqueue_check_space()
+(usr.sbin/smtpd/queue_fs.c:402): the same 5% floors for free space and
+free inodes, under the same names less a prefix, and the same
+arithmetic, used = blocks - bfree against bavail + used, with f_favail
+for inodes. It is reworked to integer arithmetic on fstatfs(2) of a
+descriptor rather than float on statfs(2) of a path, and does not skip
+the check when f_bfree or f_ffree is 0 or -1 as smtpd does
+(queue_fs.c:418-420). queue_fs.c carries one copyright line, Gilles
+Chehade's (2011), and this file carries it for that function.

@@ -1,0 +1,589 @@
+.Dd $Mdocdate: October 13 2026 $
+.Dt AIMAP.CONF 5
+.Os
+.Sh NAME
+.Nm aimap.conf
+.Nd IMAP daemon configuration file
+.Sh DESCRIPTION
+.Nm
+is the configuration file for the IMAP daemon,
+.Xr aimap 8 .
+Every setting has a default, so an empty file is a valid configuration.
+.Xr aimap 8
+refuses to start if the file does not exist.
+.Pp
+The file must be owned by root or by the user running
+.Xr aimap 8 ,
+and must not be group writable, group executable or accessible by
+others.
+.Pp
+The current line can be extended over multiple lines using a backslash
+.Pq Sq \e .
+Comments can be put anywhere in the file using a hash mark
+.Pq Sq # ,
+and extend to the end of the current line.
+Arguments not beginning with a letter, digit, colon, underscore or
+asterisk must be quoted.
+.Pp
+Additional configuration files can be included with the
+.Ic include
+keyword, for example:
+.Bd -literal -offset indent
+include "/etc/aimap.conf.local"
+.Ed
+.Pp
+An included file must meet the same ownership and permission
+requirements.
+.Pp
+When
+.Xr aimap 8
+receives
+.Dv SIGHUP
+it rereads the file and applies the new settings to connections
+accepted afterwards, except for
+.Ic listen on
+and
+.Ic credentials ,
+which take effect only when
+.Xr aimap 8
+is restarted.
+Sessions already connected are not disturbed and keep the settings
+they started with.
+A file that fails to parse is logged and the running configuration is
+kept.
+.Ss Macros
+A macro is defined with a command of the form
+.Ar name Ns = Ns Ar value .
+The macro
+.Ar name
+cannot contain whitespace.
+Within unquoted arguments, the string
+.Pf $ Ar name
+is later expanded to
+.Ar value .
+Macros can also be defined on the command line with the
+.Fl D
+option of
+.Xr aimap 8 .
+.Ss Global configuration
+.Bl -tag -width Ds
+.It Ic account sessions Ar count
+The most sessions one account may have open at once, from all of its
+clients together.
+A login past the limit is answered
+.Li NO
+with the
+.Li LIMIT
+response code, after an untagged
+.Li BYE
+with the same code, and the connection is closed.
+A client that vanishes without closing its connection holds its
+session until TCP keepalive notices, which by default is 2 hours 10
+minutes; see
+.Va net.inet.tcp.keepidle
+and
+.Va net.inet.tcp.keepintvl
+in
+.Xr sysctl 8 .
+Must be between 1 and 4096.
+The default is 8.
+.It Ic append max Ar bytes
+The largest message a client may upload with
+.Li APPEND .
+A larger one is refused with the
+.Li LIMIT
+response code and nothing is stored.
+Must be between 1 and 1073741824 and may not exceed
+.Ic attachment max .
+The default is 36700160 (35 MiB), the same as the
+.Ic smtp max-message-size
+default of
+.Xr smtpd.conf 5 .
+.It Ic attachment max Ar bytes
+The largest message
+.Xr aimap 8
+will read to produce its
+.Li BODYSTRUCTURE
+or one of its MIME parts.
+A larger message is treated as one whose structure cannot be produced;
+it is not truncated.
+A
+.Li FETCH
+of either leaves that item out of its response and ends with
+.Li NO .
+The same limit bounds what
+.Li SEARCH
+reads of a message, so a search on
+.Li BODY
+or
+.Li TEXT
+that reaches a larger message fails with
+.Li NO .
+.Pp
+Mail delivered by
+.Xr smtpd 8
+is not bound by
+.Ic append max .
+Keep the
+.Ic smtp max-message-size
+of
+.Xr smtpd.conf 5
+below
+.Ic attachment max ,
+with room for the headers
+.Xr smtpd 8
+adds to each message and for the carriage return
+.Xr aimap 8
+adds before each line feed, neither of which its limit counts.
+A maildir brought from elsewhere may already hold larger messages.
+To list them, for the default
+.Ic spool
+and
+.Ic attachment max :
+.Pp
+.Dl # find /var/mail/aimap -type f -size +41943040c
+.Pp
+Must be between 12000 and 1073741824 and may not be less than
+.Ic append max .
+The default is 41943040 (40 MiB), which leaves room above the
+.Ic smtp max-message-size
+default of 35M.
+.It Ic connections max Ar count
+The most connections open at once, logged in or not.
+Past it, a new connection on the cleartext port is answered with a
+.Li BYE
+carrying the
+.Li UNAVAILABLE
+response code, and one on the implicit TLS port is closed with nothing
+sent.
+.Pp
+C connections, L of them not yet logged in, for A accounts need up to
+C + L + 2A processes plus two, and the parent holds a descriptor to each.
+These count against the
+.Va kern.maxproc
+.Xr sysctl 8
+and the
+.Cm openfiles
+limit of the
+.Xr login.conf 5
+class
+.Xr aimap 8
+runs in; raise those before raising this.
+Must be between 1 and 4096.
+The default is 256, which fits the
+.Ox
+defaults.
+.It Ic credentials Ar path
+The credentials file; see
+.Sx Credentials and userbase files .
+It must be an absolute path to a regular file.
+The default is
+.Pa /etc/aimap/credentials .
+.It Ic idle poll Ar seconds
+How often a session in
+.Li IDLE
+checks its selected mailbox for changes.
+Must be between 1 and 300, or 0 to disable polling, in which case a
+session in
+.Li IDLE
+is told nothing until it sends
+.Li DONE .
+The default is 5.
+.It Ic listen on Ar address Oo Ic tls Oc Ic port Ar port
+Listen on
+.Ar address
+and
+.Ar port .
+Without
+.Ic tls ,
+the listener is cleartext and offers
+.Li STARTTLS ;
+with
+.Ic tls ,
+it uses implicit TLS.
+Each may be given once, and both must use the same
+.Ar address .
+.Pp
+.Ar address
+is a literal IPv4 or IPv6 address,
+.Ar 0.0.0.0
+for all IPv4 addresses,
+.Ar ::
+for all IPv6 addresses, or
+.Sq *
+for all IPv4 and IPv6 addresses.
+Hostnames are not accepted.
+.Pp
+If no
+.Ic listen on
+is given,
+.Xr aimap 8
+listens on
+.Sq *
+port 143 and
+.Sq *
+tls port 993.
+If any is given, only the listeners named are bound.
+.It Ic lock timeout Ar seconds
+How long a command waits for a mailbox lock held by another process
+before answering
+.Li NO
+with the
+.Li INUSE
+response code.
+This bounds a holder that is stuck, not one that is slow, and should
+be raised for mailboxes much larger than a hundred thousand messages.
+Must be between 1 and 3600, or 0 to wait indefinitely.
+The default is 120.
+.It Ic login grace Ar seconds
+How long a connection may remain unauthenticated before it is closed,
+including one that never begins a TLS handshake.
+This is the pre-authentication timer permitted by RFC 9051 section 5.4;
+it does not apply once a session has authenticated.
+Must be between 1 and 3600, or 0 to disable it.
+The default is 60.
+.It Ic spool Ar path
+The mail spool.
+Each account's mailbox process is
+.Xr chroot 2 Ns ed
+into
+.Ar path ,
+and each maildir in the userbase file must be under it.
+.Ar path
+and the directories above it must be owned by root and not be
+writable by mail users;
+.Xr aimap 8
+does not check this.
+When less than 5% of the space or inodes of the filesystem holding a
+mailbox is free to non-root users,
+.Xr aimap 8
+refuses to add to it: APPEND, COPY, MOVE to another mailbox and CREATE
+fail with the
+.Dq OVERQUOTA
+response code.
+Flags can still be changed and messages expunged.
+Mail delivered by
+.Xr smtpd 8
+is not refused.
+The default is
+.Pa /var/mail/aimap .
+.It Ic startups begin Ar count Ic rate Ar percent Ic full Ar count
+Limit concurrent connections that have not yet authenticated, using
+the algorithm of
+.Cm MaxStartups
+in
+.Xr sshd_config 5 .
+Below
+.Ic begin
+such connections, every new connection is accepted.
+From
+.Ic begin ,
+new connections are refused with a probability rising linearly from
+.Ic rate
+percent to 100 percent at
+.Ic full .
+A refused connection is answered as for
+.Ic connections max .
+.Pp
+The counts must be between 0 and 1000000,
+.Ar percent
+between 0 and 100, and
+.Ic full
+may not be less than
+.Ic begin .
+Setting
+.Ic full
+to 0 disables the limit.
+The default is
+.Ic begin
+10
+.Ic rate
+30
+.Ic full
+100.
+.It Ic startups per-source Ar count | Ic none
+The most connections that have not yet authenticated from any one
+address, as
+.Cm PerSourceMaxStartups
+in
+.Xr sshd_config 5 .
+Each IPv6 address counts separately.
+A refused connection is answered as for
+.Ic connections max .
+Must be between 1 and 1000000, or
+.Ic none
+to disable the limit.
+The default is 5.
+.It Ic tls certificate Ar path
+The TLS certificate.
+The default is
+.Pa /etc/ssl/aimap.crt .
+.It Ic tls key Ar path
+The TLS private key, which must be owned by root and have no
+permissions beyond 0740.
+A key that fails this check is not loaded, and a warning is logged.
+The default is
+.Pa /etc/ssl/private/aimap.key .
+.It Ic userbase Ar path
+The userbase file; see
+.Sx Credentials and userbase files .
+It must be an absolute path to a regular file.
+The default is
+.Pa /etc/aimap/userbase .
+.El
+.Ss Credentials and userbase files
+Users of
+.Xr aimap 8
+are not system accounts.
+Each is listed in two files, both
+.Xr table 5
+mappings that
+.Xr smtpd 8
+can read too; see
+.Sx Mail delivery .
+A line holds a username, then spaces, tabs or a colon, then a value.
+Empty lines and lines beginning with
+.Sq #
+are ignored.
+A username matches in any case, and of two lines naming one user the
+last is used.
+A line with no value causes every login to be refused.
+.Pp
+The credentials file, named by
+.Ic credentials ,
+maps each username to a bcrypt hash as accepted by
+.Xr crypt_checkpass 3 ,
+such as
+.Ql encrypt -b a
+or
+.Ql smtpctl encrypt
+prints:
+.Bd -literal -offset indent
+joe	$2b$10$qaMAWgb68gLtcVf4VWYoGuBuiQj3cj3mxHW9NWGeZgpBfabwi3AgO
+.Ed
+.Pp
+A value that is not a well-formed bcrypt hash, such as
+.Sq * ,
+locks the account, and a failed login for it costs the same as one for
+a name with no entry.
+A value with a colon in it, as in the five-field lines of earlier
+versions, causes every login to be refused.
+.Pp
+The userbase file, named by
+.Ic userbase ,
+maps each username to the user and group the account's mailbox process
+runs as, and to its maildir, an absolute path under
+.Ic spool :
+.Bd -literal -offset indent
+joe	2000:2000:/var/mail/aimap/joe
+.Ed
+.Pp
+Users with the same
+.Ar uid ,
+.Ar gid
+and maildir share one account.
+A login with the right password is refused if the user has no
+userbase line, if its
+.Ar uid
+or
+.Ar gid
+is 0 or 4294967295, or if its maildir is
+.Ic spool
+itself, is not under it, is longer than 255 bytes below it, or has a
+.Pa \&.
+or
+.Pa ..
+component.
+It is also refused if the account's mailbox process is not running
+in the maildir within 10 seconds, as when the directory does not exist
+or its filesystem is not mounted.
+The client is sent an untagged
+.Li BYE
+and then
+.Li NO ,
+both with the
+.Li UNAVAILABLE
+response code, and the cause is logged.
+.Sx EXAMPLES
+shows how to add and remove accounts.
+.Pp
+The credentials file is read by a process running as
+.Sy _aimapauth ,
+so it must be readable by that user.
+It must be owned by root or
+.Sy _aimapauth
+and must not be group writable or executable, or accessible by
+others; otherwise every login is refused.
+Create it owned by root, group
+.Sy _aimapauth ,
+mode 0640.
+A failed login for a name with no entry costs one hash at the highest
+cost in the file, so an entry hashed at a lower cost can be told from a
+missing one by timing; rehash such entries at the file's cost.
+.Pp
+The userbase file is read as root at each login, so a change to it
+takes effect at the next login.
+It must be owned by root and must not be group or world writable;
+otherwise every login is refused.
+.Ss Mail delivery
+.Xr aimap 8
+does not deliver mail.
+.Xr smtpd 8
+delivers it with its
+.Cm maildir
+method, configured in
+.Xr smtpd.conf 5 .
+Accounts are not system users, so the action needs a
+.Cm userbase
+table, and the userbase file is one.
+Its
+.Ar uid
+and
+.Ar gid
+serve both daemons:
+.Xr smtpd 8
+writes each message as that user, mode 0600, and the account's mailbox
+process reads it as the same user.
+A configuration that delivers mail for one domain to the users in the
+file:
+.Bd -literal -offset indent
+table aimap_users file:/etc/aimap/userbase
+
+action "aimap" maildir "%{user.directory}" userbase <aimap_users>
+
+match from any for domain "example.org" action "aimap"
+.Ed
+.Pp
+The
+.Cm maildir
+path must be given.
+Without it, mail goes to
+.Pa ~/Maildir ,
+a subdirectory of the account's maildir, which
+.Xr aimap 8
+shows as a mailbox named
+.Dq Maildir .
+The
+.Ic match
+rule must come before any other rule that matches the same recipients.
+Mail from other hosts must arrive on a listener without the
+.Cm auth
+option, or with
+.Cm auth-optional
+instead.
+After editing the userbase file, run:
+.Pp
+.Dl # smtpctl update table aimap_users
+.Pp
+The credentials file can be the
+.Cm auth
+table of a listener, so that users submit mail with the password they
+use for IMAP:
+.Bd -literal -offset indent
+table aimap_creds file:/etc/aimap/credentials
+
+listen on egress port 587 tls-require auth <aimap_creds>
+.Ed
+.Pp
+.Xr smtpd 8
+reads its tables as root when it starts, but
+.Ql smtpctl update table
+rereads one as
+.Sy _smtpd ,
+which cannot read a credentials file that only root and
+.Sy _aimapauth
+may read; restart
+.Xr smtpd 8
+after editing it instead.
+.Pp
+With the
+.Cm junk
+option, spam is delivered to a mailbox named
+.Dq \&.Junk .
+.Pp
+Mail for a subaddress, such as
+.Ql joe+lists ,
+is delivered to the mailbox named
+.Dq \&.lists
+if it exists, and to INBOX otherwise.
+To have such mail filed, create the mailbox with the leading dot.
+.Sh FILES
+.Bl -tag -width "/usr/local/share/examples/aimap/aimap.conf" -compact
+.It Pa /etc/aimap.conf
+.Xr aimap 8
+configuration file.
+.It Pa /etc/aimap/credentials
+Default credentials file.
+.It Pa /etc/aimap/userbase
+Default userbase file.
+.It Pa /usr/local/share/examples/aimap/aimap.conf
+Example configuration file.
+.El
+.Sh EXAMPLES
+Listen with implicit TLS only, as RFC 8314 section 3 recommends, on all
+IPv4 and IPv6 addresses:
+.Bd -literal -offset indent
+listen on * tls port 993
+.Ed
+.Pp
+Use a certificate and key named for the host, and allow each account
+more concurrent sessions:
+.Bd -literal -offset indent
+tls certificate "/etc/ssl/mail.example.com.fullchain.pem"
+tls key "/etc/ssl/private/mail.example.com.key"
+account sessions 16
+.Ed
+.Pp
+Accounts are not system users and are added by hand.
+Once, create the directory that holds the credentials and userbase
+files, the files themselves, and the spool:
+.Bd -literal -offset indent
+# mkdir -m 755 /etc/aimap /var/mail/aimap
+# touch /etc/aimap/credentials /etc/aimap/userbase
+# chown root:_aimapauth /etc/aimap/credentials
+# chmod 640 /etc/aimap/credentials
+# chmod 644 /etc/aimap/userbase
+.Ed
+.Pp
+For each account, choose a user and group ID that no system account
+uses, create its maildir owned by them, and add its two lines:
+.Bd -literal -offset indent
+# mkdir -m 700 /var/mail/aimap/joe
+# chown 2000:2000 /var/mail/aimap/joe
+# echo 'joe 2000:2000:/var/mail/aimap/joe' >> /etc/aimap/userbase
+# encrypt -b a -p
+Enter string:
+$2b$10$...
+# echo 'joe $2b$10$...' >> /etc/aimap/credentials
+.Ed
+.Pp
+The maildir's
+.Pa cur ,
+.Pa new
+and
+.Pa tmp
+directories are created when first needed.
+Both files are read at each login, so the account can log in at once.
+If
+.Xr smtpd 8
+delivers to the userbase, update its table as described in
+.Sx Mail delivery .
+.Pp
+To change a password, replace the account's credentials line.
+To remove an account, remove its credentials line, then its userbase
+line.
+The maildir and the mail in it are left in place.
+.Sh SEE ALSO
+.Xr encrypt 1 ,
+.Xr crypt_checkpass 3 ,
+.Xr login.conf 5 ,
+.Xr smtpd.conf 5 ,
+.Xr sshd_config 5 ,
+.Xr table 5 ,
+.Xr aimap 8 ,
+.Xr smtpctl 8 ,
+.Xr smtpd 8 ,
+.Xr sysctl 8
+.Sh HISTORY
+.Nm
+was written by Claude AI
