@@ -23,9 +23,14 @@ ACL/shared-mailbox support is deliberately left out.
 
 OpenBSD only. This depends on `<imsg.h>`, `pledge(2)`, `unveil(2)`, and libutil's `imsgbuf_*` API, none of which exist outside OpenBSD. Links against libevent, libtls/libssl/libcrypto, and libutil, all base-system libraries.
 
-**aimap requires OpenBSD 8.0**
+**aimap requires OpenBSD 8.0.**
 
-`keymgr`, the process that isolates the TLS private key from `listener`, additionally depends on `tls_config_use_fake_private_key()` and undocumented ex_data-tagging behavior inside `tls_keypair_load()`, both unexported libtls/LibreSSL internals with no compatibility promise, and neither declared in libtls's public, installed `tls.h`.
+`keymgr`, the process that keeps the TLS private key out of the `listener` workers, relies on two parts of libtls that are not public API:
+
+- `tls_config_use_fake_private_key()`. libtls exports it, but it is not declared in the installed `tls.h`; libtls keeps it visible for base-system daemons such as relayd and smtpd, so aimap declares it itself.
+- libtls's undocumented tagging of the placeholder key: it stores a hash of the certificate's public key in ex_data slot 0 of the RSA or EC key object (currently in `tls_keypair_setup_pkey()` in `lib/libtls/tls.c`), which aimap reads to route each private-key operation to `keymgr`.
+
+Neither has any compatibility promise, so a libtls change in a future OpenBSD release or patch could break TLS in aimap.
 
 ## Building and installing
 
