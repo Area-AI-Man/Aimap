@@ -2,7 +2,7 @@
 
 A from-scratch IMAP4rev2 ([RFC 9051](https://www.rfc-editor.org/rfc/rfc9051)) server for OpenBSD, written by Claude AI in C in the privilege-separated tradition of `smtpd(8)`, `httpd(8)`, and `ntpd(8)`. No third-party IMAP library.
 
-**Status:** 0.0.1 Pre-release. Not in the OpenBSD ports tree.
+**Status:** 0.0.2 Pre-release. Not in the OpenBSD ports tree.
 
 ## What it is
 

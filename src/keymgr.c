@@ -41,10 +41,12 @@ static TAILQ_HEAD(, keymgr_peer)	 keymgr_peers =
 
 static struct imsgev	 iev_parent;
 
-static char	*reload_cert, *reload_key;
-static size_t	 reload_cert_len, reload_cert_got;
-static size_t	 reload_key_len, reload_key_got;
-static int	 reload_got_cert, reload_got_key;
+/* The pair being received, numbered by the parent. */
+static char	*pair_cert, *pair_key;
+static size_t	 pair_cert_len, pair_cert_got;
+static size_t	 pair_key_len, pair_key_got;
+static int	 pair_got_cert, pair_got_key, pair_done;
+static uint32_t	 pair_gen;
 
 static EVP_PKEY	*keymgr_pkey;
 static char	 keymgr_hash[KEYMGR_HASH_MAX];
@@ -54,7 +56,8 @@ static int	 keymgr_got_init;
 
 static void	 keymgr_key_free(void);
 static int	 keymgr_load(const char *, size_t, const char *, size_t);
-static void	 keymgr_try_reload(void);
+static void	 keymgr_pair_reset(void);
+static int	 keymgr_pair_chunk(struct imsgbuf *, struct imsg *);
 static int	 keymgr_pubkey_hash(X509 *, char *, size_t);
 static void	 keymgr_dispatch_listener(int, short, void *);
 static void	 keymgr_peer_teardown(struct keymgr_peer *);
@@ -74,16 +77,12 @@ keymgr_main(void)
 	struct imsgbuf	 ibuf3;
 	struct passwd	*pw;
 	struct imsg	 imsg;
-	size_t		 cert_len = 0, cert_got = 0;
-	size_t		 key_len = 0, key_got = 0;
-	char		*cert = NULL, *key = NULL;
-	int		 n;
-	int		 got_cert = 0, got_key = 0;
+	int		 n, booted = 0;
 
 	imsgev_ibuf_init(&ibuf3, 3);
 
 	/* The key is ready before any peer can ask. */
-	while (!got_cert || !got_key) {
+	while (!booted) {
 		if ((n = imsgbuf_get(&ibuf3, &imsg)) == -1)
 			fatal("imsgbuf_get");
 		if (n == 0) {
@@ -96,14 +95,8 @@ keymgr_main(void)
 		}
 		switch (imsg_get_type(&imsg)) {
 		case IMSG_TLS_CERT:
-			if (recv_chunk(&imsg, &cert, &cert_len, &cert_got,
-			    "IMSG_TLS_CERT") == -1 || cert_got == cert_len)
-				got_cert = 1;
-			break;
 		case IMSG_KEYMGR_INIT:
-			if (recv_chunk(&imsg, &key, &key_len, &key_got,
-			    "IMSG_KEYMGR_INIT") == -1 || key_got == key_len)
-				got_key = 1;
+			booted = keymgr_pair_chunk(&ibuf3, &imsg);
 			break;
 		default:
 			log_debug("keymgr boot: unhandled %d",
@@ -112,15 +105,8 @@ keymgr_main(void)
 		}
 		imsg_free(&imsg);
 	}
-
-	if (cert_len == 0 || key_len == 0)
-		log_warnx("no usable TLS cert/key, handshakes fail until a "
-		    "reload");
-	else if (keymgr_load(cert, cert_len, key, key_len) == -1)
-		log_warnx("TLS cert/key not loaded, handshakes fail until a "
-		    "reload");
-	freezero(key, key_len);
-	free(cert);
+	if (imsgbuf_flush(&ibuf3) == -1)
+		fatal("imsgbuf_flush");
 	keymgr_got_init = 1;
 
 	if ((pw = getpwnam(AIMAP_USER)) == NULL)
@@ -254,20 +240,63 @@ fail:
 }
 
 static void
-keymgr_try_reload(void)
+keymgr_pair_reset(void)
 {
-	if (!reload_got_cert || !reload_got_key)
-		return;
+	freezero(pair_key, pair_key_len);
+	free(pair_cert);
+	pair_key = pair_cert = NULL;
+	pair_key_len = pair_key_got = 0;
+	pair_cert_len = pair_cert_got = 0;
+	pair_got_cert = pair_got_key = 0;
+}
 
-	if (keymgr_load(reload_cert, reload_cert_len, reload_key,
-	    reload_key_len) == -1)
+/*
+ * Returns 1 once a pair is complete and its answer is queued.  A
+ * certificate with a new id starts a new pair.
+ */
+static int
+keymgr_pair_chunk(struct imsgbuf *ibuf, struct imsg *imsg)
+{
+	struct imsg_keymgr_loaded	 loaded;
+	uint32_t			 gen, type;
+
+	gen = imsg_get_id(imsg);
+	type = imsg_get_type(imsg);
+	if (type == IMSG_TLS_CERT && gen != pair_gen) {
+		keymgr_pair_reset();
+		pair_gen = gen;
+		pair_done = 0;
+	}
+	if (gen != pair_gen || pair_done) {
+		log_warnx("pair %u: piece arrived during pair %u, ignored",
+		    gen, pair_gen);
+		return (0);
+	}
+
+	if (type == IMSG_TLS_CERT) {
+		if (recv_chunk(imsg, &pair_cert, &pair_cert_len,
+		    &pair_cert_got, "IMSG_TLS_CERT") == -1 ||
+		    pair_cert_got == pair_cert_len)
+			pair_got_cert = 1;
+	} else {
+		if (recv_chunk(imsg, &pair_key, &pair_key_len, &pair_key_got,
+		    "IMSG_KEYMGR_INIT") == -1 || pair_key_got == pair_key_len)
+			pair_got_key = 1;
+	}
+	if (!pair_got_cert || !pair_got_key)
+		return (0);
+
+	memset(&loaded, 0, sizeof(loaded));
+	loaded.ok = keymgr_load(pair_cert, pair_cert_len, pair_key,
+	    pair_key_len) == 0;
+	if (!loaded.ok && keymgr_got_init)
 		log_warnx("SIGHUP: keeping the previous key");
-	freezero(reload_key, reload_key_len);
-	free(reload_cert);
-	reload_key = reload_cert = NULL;
-	reload_key_len = reload_key_got = 0;
-	reload_cert_len = reload_cert_got = 0;
-	reload_got_cert = reload_got_key = 0;
+	keymgr_pair_reset();
+	pair_done = 1;
+	if (imsg_compose(ibuf, IMSG_KEYMGR_LOADED, gen, 0, -1, &loaded,
+	    sizeof(loaded)) == -1)
+		log_warn("imsg_compose IMSG_KEYMGR_LOADED");
+	return (1);
 }
 
 static void
@@ -332,20 +361,8 @@ keymgr_dispatch_parent(int fd, short event, void *arg)
 			log_debug("session %u: listener peer wired", sess_id);
 			break;
 		case IMSG_TLS_CERT:
-			if (recv_chunk(&imsg, &reload_cert, &reload_cert_len,
-			    &reload_cert_got, "IMSG_TLS_CERT") == -1 ||
-			    reload_cert_got == reload_cert_len) {
-				reload_got_cert = 1;
-				keymgr_try_reload();
-			}
-			break;
 		case IMSG_KEYMGR_INIT:
-			if (recv_chunk(&imsg, &reload_key, &reload_key_len,
-			    &reload_key_got, "IMSG_KEYMGR_INIT") == -1 ||
-			    reload_key_got == reload_key_len) {
-				reload_got_key = 1;
-				keymgr_try_reload();
-			}
+			(void)keymgr_pair_chunk(&iev->ibuf, &imsg);
 			break;
 		default:
 			log_debug("%s: unhandled %d", __func__,
@@ -394,6 +411,15 @@ keymgr_dispatch_listener(int fd, short event, void *arg)
 			fatal("imsgbuf_get");
 		if (n == 0)
 			break;
+
+		/* A listener waits for each reply before asking again. */
+		if (imsgbuf_queuelen(&iev->ibuf) > 0) {
+			log_warnx("session %u: request before the last reply "
+			    "was sent, dropping this peer", kp->session_id);
+			imsg_free(&imsg);
+			keymgr_peer_teardown(kp);
+			return;
+		}
 
 		switch (imsg_get_type(&imsg)) {
 		case IMSG_KEYMGR_RSA_PRIVENC:

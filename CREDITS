@@ -82,6 +82,16 @@ path. sshd makes the same requirement for the same reason
 absolute path"), and re-executes itself by execv(saved_argv[0],
 saved_argv) (:511).
 
+tls_pair_check() follows smtpd in loading the TLS certificate and key
+in the parent before daemonizing, so that a bad pair stops startup
+where rc.d(8) sees it. smtpd calls load_pki_tree() and load_pki_keys()
+(usr.sbin/smtpd/smtpd.c:638-639) before daemon(3) (:683), and for its
+-n configtest too (:624-625), and fails with fatalx() when a
+certificate or key file is missing or will not load (:1109-1114,
+:1139). The function is this file's own, and it adds a check smtpd
+does not make, that the certificate and key match
+(X509_check_private_key(3)).
+
 listener.c
 ----------
 The RSA_METHOD/EC_KEY_METHOD engine override below (keymgr_engine_

@@ -39,6 +39,11 @@
 #include <tls.h>
 #include <unistd.h>
 
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
 #include "aimap.h"
 #include "log.h"
 
@@ -103,6 +108,22 @@ static TAILQ_HEAD(, open_session)	 open_sessions =
 				    TAILQ_HEAD_INITIALIZER(open_sessions);
 
 static struct imsgev		*iev_keymgr;
+
+/* A certificate sent to keymgr, until it answers. */
+struct cert_pending {
+	uint32_t			 gen;
+	uint8_t				*cert;
+	size_t				 len;
+	TAILQ_ENTRY(cert_pending)	 entry;
+};
+static TAILQ_HEAD(, cert_pending)	 certs_pending =
+				    TAILQ_HEAD_INITIALIZER(certs_pending);
+static uint32_t			 keymgr_gen;
+
+/* The certificate listeners are given, matching keymgr's key. */
+static uint8_t			*live_cert;
+static size_t			 live_cert_len;
+
 static struct aimap_config	*gconf;
 static char			 progpath[PATH_MAX];
 static char			**saved_argv;
@@ -163,12 +184,14 @@ static void			 bind_one(int, const struct sockaddr *,
 static void			 bind_listen_socket(const char *, uint16_t,
 		    int);
 static int			 send_chunked(struct imsgev *, uint32_t,
-		    uint8_t *, size_t);
+		    uint32_t, uint8_t *, size_t);
 static uint8_t			*load_key_file(const char *, size_t *);
-static int			 send_tls_cert(struct imsgev *,
-		    struct aimap_config *);
+static int			 send_tls_cert(struct imsgev *);
 static int			 send_keymgr_init(struct imsgev *,
 		    struct aimap_config *);
+static int			 keymgr_loaded(uint32_t, int);
+static void			 keymgr_wait_loaded(void);
+static void			 certs_pending_clear(void);
 static int			 send_auth_init(struct imsgev *,
 		    struct aimap_config *);
 static void			 sighup_handler(int, short, void *);
@@ -220,6 +243,8 @@ parent_main(const char *conffile, int argc, char *argv[],
 	if (realpath(argv[0], progpath) == NULL)
 		fatal("realpath");
 
+	tls_pair_check(conf);
+
 	/* Binding below port 1024 needs root. */
 	if (conf->port_cleartext != 0)
 		bind_listen_socket(conf->listen_addr, conf->port_cleartext, 0);
@@ -237,6 +262,7 @@ parent_main(const char *conffile, int argc, char *argv[],
 	fork_child(PROC_KEYMGR, &iev_keymgr, parent_dispatch_child);
 	if (send_keymgr_init(iev_keymgr, conf) == -1)
 		fatalx("send_keymgr_init: could not initialize keymgr at boot");
+	keymgr_wait_loaded();
 
 	setup_done_send(iev_keymgr);
 
@@ -442,15 +468,16 @@ setup_done_send(struct imsgev *iev)
 static void
 parent_dispatch_child(int fd, short event, void *arg)
 {
-	struct imsg_auth_cred	 req;
-	struct child		*c = arg;
-	struct imsgev		*iev = &c->iev;
-	struct imsg		 imsg;
-	struct open_session	*os;
-	char			 maildir[STORE_MAILDIR_MAX];
-	uid_t			 uid;
-	gid_t			 gid;
-	int			 n;
+	struct imsg_keymgr_loaded	 loaded;
+	struct imsg_auth_cred		 req;
+	struct child			*c = arg;
+	struct imsgev			*iev = &c->iev;
+	struct imsg			 imsg;
+	struct open_session		*os;
+	char				 maildir[STORE_MAILDIR_MAX];
+	uid_t				 uid;
+	gid_t				 gid;
+	int				 n;
 
 	if (event & EV_WRITE) {
 		if (imsgbuf_write(&iev->ibuf) == -1) {
@@ -525,6 +552,22 @@ parent_dispatch_child(int fd, short event, void *arg)
 				break;
 			}
 			parent_handle_store_fork(os, uid, gid, maildir);
+			break;
+		case IMSG_KEYMGR_LOADED:
+			if (iev != iev_keymgr) {
+				log_warnx("%s[%d]: IMSG_KEYMGR_LOADED refused",
+				    proc_name(c->type), c->pid);
+				break;
+			}
+			if (!recv_fixed(&imsg, &loaded, sizeof(loaded),
+			    "IMSG_KEYMGR_LOADED"))
+				break;
+			if (keymgr_loaded(imsg_get_id(&imsg), loaded.ok) == 0)
+				log_info("SIGHUP: TLS certificate and key "
+				    "loaded");
+			else
+				log_warnx("SIGHUP: TLS certificate and key "
+				    "refused, keeping the old");
 			break;
 		default:
 			log_debug("%s: unhandled %d", __func__,
@@ -825,7 +868,7 @@ spawn_connection(int client_fd, int implicit_tls,
 		goto fail_workers;
 	}
 	/* The imsg owns client_fd now. */
-	if (send_tls_cert(new_listener_iev, gconf) == -1)
+	if (send_tls_cert(new_listener_iev) == -1)
 		goto fail_workers;
 	return;
 
@@ -1428,7 +1471,8 @@ bind_listen_socket(const char *addr, uint16_t port, int implicit_tls)
  * Keep each piece under the imsgbuf's default maximum.
  */
 static int
-send_chunked(struct imsgev *iev, uint32_t type, uint8_t *data, size_t len)
+send_chunked(struct imsgev *iev, uint32_t type, uint32_t id, uint8_t *data,
+    size_t len)
 {
 	struct imsg_tls_chunk	 c;
 	struct iovec		 iov[2];
@@ -1444,7 +1488,7 @@ send_chunked(struct imsgev *iev, uint32_t type, uint8_t *data, size_t len)
 		iov[0].iov_len = sizeof(c);
 		iov[1].iov_base = n > 0 ? data + c.offset : NULL;
 		iov[1].iov_len = n;
-		if (imsg_composev(&iev->ibuf, type, 0, 0, -1, iov,
+		if (imsg_composev(&iev->ibuf, type, id, 0, -1, iov,
 		    n > 0 ? 2 : 1) == -1)
 			return (-1);
 		c.offset += n;
@@ -1453,18 +1497,10 @@ send_chunked(struct imsgev *iev, uint32_t type, uint8_t *data, size_t len)
 }
 
 static int
-send_tls_cert(struct imsgev *iev, struct aimap_config *conf)
+send_tls_cert(struct imsgev *iev)
 {
-	uint8_t		*cert;
-	size_t		 len;
-	int		 rc;
-
-	/* The certificate is public, so only reading it matters. */
-	if ((cert = tls_load_file(conf->tls_cert_file, &len, NULL)) == NULL)
-		log_warn("%s, TLS disabled", conf->tls_cert_file);
-	rc = send_chunked(iev, IMSG_TLS_CERT, cert, len);
-	tls_unload_file(cert, len);
-	if (rc == -1) {
+	if (send_chunked(iev, IMSG_TLS_CERT, 0, live_cert,
+	    live_cert_len) == -1) {
 		log_warn("imsg_compose IMSG_TLS_CERT");
 		return (-1);
 	}
@@ -1488,22 +1524,22 @@ load_key_file(const char *path, size_t *lenp)
 
 	*lenp = 0;
 	if ((fd = open(path, O_RDONLY | O_CLOEXEC)) == -1) {
-		log_warn("%s, TLS disabled", path);
+		log_warn("%s", path);
 		return (NULL);
 	}
 	if (fstat(fd, &st) == -1)
 		log_warn("fstat %s", path);
 	else if (st.st_uid != 0)
-		log_warnx("%s: not owned by uid 0, TLS disabled", path);
+		log_warnx("%s: not owned by uid 0", path);
 	else if (st.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO) & ~0740)
-		log_warnx("%s: insecure permissions, TLS disabled", path);
+		log_warnx("%s: insecure permissions", path);
 	else if ((buf = malloc(st.st_size)) == NULL)
-		log_warn("%s, TLS disabled", path);
+		log_warn("%s", path);
 	else if ((n = read(fd, buf, st.st_size)) != st.st_size) {
 		if (n == -1)
-			log_warn("read %s, TLS disabled", path);
+			log_warn("read %s", path);
 		else
-			log_warnx("%s: short read, TLS disabled", path);
+			log_warnx("%s: short read", path);
 		freezero(buf, st.st_size);
 		buf = NULL;
 	} else
@@ -1512,28 +1548,151 @@ load_key_file(const char *path, size_t *lenp)
 	return (buf);
 }
 
+/*
+ * Both halves carry one id, which keymgr's answer repeats.
+ */
 static int
 send_keymgr_init(struct imsgev *iev, struct aimap_config *conf)
 {
-	uint8_t		*key;
-	size_t		 len;
-	int		 rc;
+	struct cert_pending	*cp;
+	uint8_t			*cert, *key;
+	size_t			 cert_len = 0, key_len;
+	int			 rc;
 
-	if (send_tls_cert(iev, conf) == -1)
+	if ((cp = calloc(1, sizeof(*cp))) == NULL) {
+		log_warn("calloc");
 		return (-1);
+	}
+	if ((cert = tls_load_file(conf->tls_cert_file, &cert_len, NULL))
+	    == NULL) {
+		log_warn("%s", conf->tls_cert_file);
+		cert_len = 0;
+	}
+	key = load_key_file(conf->tls_key_file, &key_len);
 
-	key = load_key_file(conf->tls_key_file, &len);
-	rc = send_chunked(iev, IMSG_KEYMGR_INIT, key, len);
-	freezero(key, len);
-	if (rc == -1) {
+	cp->gen = ++keymgr_gen;
+	rc = send_chunked(iev, IMSG_TLS_CERT, cp->gen, cert, cert_len);
+	if (rc == 0)
+		rc = send_chunked(iev, IMSG_KEYMGR_INIT, cp->gen, key,
+		    key_len);
+	freezero(key, key_len);
+	if (rc == -1)
 		log_warn("imsg_compose IMSG_KEYMGR_INIT");
-		return (-1);
-	}
-	if (imsgbuf_flush(&iev->ibuf) == -1) {
+	else if ((rc = imsgbuf_flush(&iev->ibuf)) == -1)
 		log_warn("imsgbuf_flush IMSG_KEYMGR_INIT");
+	if (rc == -1) {
+		tls_unload_file(cert, cert_len);
+		free(cp);
 		return (-1);
 	}
+
+	cp->cert = cert;
+	cp->len = cert_len;
+	TAILQ_INSERT_TAIL(&certs_pending, cp, entry);
 	return (0);
+}
+
+/*
+ * Answers come in order, so older pairs got none.
+ */
+static int
+keymgr_loaded(uint32_t gen, int ok)
+{
+	struct cert_pending	*cp;
+
+	while ((cp = TAILQ_FIRST(&certs_pending)) != NULL && cp->gen < gen) {
+		TAILQ_REMOVE(&certs_pending, cp, entry);
+		tls_unload_file(cp->cert, cp->len);
+		free(cp);
+	}
+	if (cp == NULL || cp->gen != gen) {
+		log_warnx("keymgr: answer for unknown pair %u", gen);
+		return (-1);
+	}
+	TAILQ_REMOVE(&certs_pending, cp, entry);
+
+	if (ok) {
+		tls_unload_file(live_cert, live_cert_len);
+		live_cert = cp->cert;
+		live_cert_len = cp->len;
+	} else
+		tls_unload_file(cp->cert, cp->len);
+	free(cp);
+	return (ok ? 0 : -1);
+}
+
+static void
+keymgr_wait_loaded(void)
+{
+	struct imsg_keymgr_loaded	 loaded;
+	struct imsg			 imsg;
+	int				 n;
+
+	for (;;) {
+		if ((n = imsgbuf_get(&iev_keymgr->ibuf, &imsg)) == -1)
+			fatal("imsgbuf_get");
+		if (n != 0)
+			break;
+		if ((n = imsgbuf_read(&iev_keymgr->ibuf)) == -1)
+			fatal("imsgbuf_read");
+		if (n == 0)
+			fatalx("keymgr: exited before loading the TLS key");
+	}
+	if (imsg_get_type(&imsg) != IMSG_KEYMGR_LOADED ||
+	    !recv_fixed(&imsg, &loaded, sizeof(loaded), "IMSG_KEYMGR_LOADED"))
+		fatalx("%s: expected IMSG_KEYMGR_LOADED", __func__);
+	if (keymgr_loaded(imsg_get_id(&imsg), loaded.ok) == -1)
+		fatalx("keymgr: TLS certificate and key not loaded");
+	imsg_free(&imsg);
+}
+
+static void
+certs_pending_clear(void)
+{
+	struct cert_pending	*cp;
+
+	while ((cp = TAILQ_FIRST(&certs_pending)) != NULL) {
+		TAILQ_REMOVE(&certs_pending, cp, entry);
+		tls_unload_file(cp->cert, cp->len);
+		free(cp);
+	}
+}
+
+/*
+ * Check the pair before daemonizing, so that rc.d sees a bad one.
+ * Keymgr checks it again when it loads it.
+ */
+void
+tls_pair_check(struct aimap_config *conf)
+{
+	EVP_PKEY	*pkey;
+	uint8_t		*cert, *key;
+	size_t		 cert_len, key_len;
+	X509		*x509;
+	BIO		*bio;
+
+	if ((cert = tls_load_file(conf->tls_cert_file, &cert_len, NULL))
+	    == NULL)
+		fatal("%s", conf->tls_cert_file);
+	if ((key = load_key_file(conf->tls_key_file, &key_len)) == NULL)
+		fatalx("%s: not loaded", conf->tls_key_file);
+
+	if ((bio = BIO_new_mem_buf(cert, (int)cert_len)) == NULL ||
+	    (x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL)) == NULL)
+		fatalx("%s: no PEM certificate", conf->tls_cert_file);
+	BIO_free(bio);
+	if ((bio = BIO_new_mem_buf(key, (int)key_len)) == NULL ||
+	    (pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL)) == NULL)
+		fatalx("%s: no PEM private key", conf->tls_key_file);
+	BIO_free(bio);
+	freezero(key, key_len);
+
+	if (X509_check_private_key(x509, pkey) != 1)
+		fatalx("%s: does not match %s", conf->tls_cert_file,
+		    conf->tls_key_file);
+	EVP_PKEY_free(pkey);
+	X509_free(x509);
+	tls_unload_file(cert, cert_len);
 }
 
 static int
@@ -1594,8 +1753,8 @@ sighup_handler(int fd, short event, void *arg)
 	/* Keymgr holds every connection's key, so push it. */
 	if (iev_keymgr != NULL) {
 		if (send_keymgr_init(iev_keymgr, gconf) == -1)
-			log_warnx("SIGHUP: keymgr did not take the new "
-			    "certificate and key, keeping the old");
+			log_warnx("SIGHUP: TLS certificate and key not sent "
+			    "to keymgr");
 	} else
 		log_warnx("SIGHUP: keymgr is gone, TLS private key not "
 		    "reloaded");
@@ -1747,6 +1906,7 @@ reap_child(pid_t pid, int status)
 					log_warnx("keymgr[%d] exited, TLS "
 					    "handshakes will fail", pid);
 				iev_keymgr = NULL;
+				certs_pending_clear();
 				free(c);
 				return;
 			}

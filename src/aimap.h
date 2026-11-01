@@ -11,7 +11,7 @@
 #include <limits.h>
 #include <stdint.h>
 
-#define AIMAP_VERSION	"0.0.1"
+#define AIMAP_VERSION	"0.0.2"
 
 #define AIMAP_USER	"_aimap"
 #define AIMAP_AUTH_USER	"_aimapauth"
@@ -45,6 +45,7 @@ enum imsg_type {
 
 	/* The TLS private key, at boot and on SIGHUP. */
 	IMSG_KEYMGR_INIT,
+	IMSG_KEYMGR_LOADED,
 
 	/* A reply reuses its request's type and id. */
 	IMSG_KEYMGR_RSA_PRIVENC,
@@ -186,6 +187,11 @@ struct imsg_keymgr_sign_request {
 	/* Ignored for ECDSA. */
 	uint32_t	padding;
 	uint32_t	fromlen;
+};
+
+/* The answer to each pair, carrying the pair's id. */
+struct imsg_keymgr_loaded {
+	int		ok;
 };
 
 struct imsg_keymgr_sign_reply {
@@ -699,6 +705,7 @@ int		 table_line(char *, char **, char **);
 
 __dead void	 parent_main(const char *, int, char *[],
 		    struct aimap_config *, int);
+void		 tls_pair_check(struct aimap_config *);
 
 /* Each role's configuration arrives over fd 3. */
 __dead void	 listener_main(void);

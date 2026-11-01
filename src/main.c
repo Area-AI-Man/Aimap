@@ -132,6 +132,7 @@ main(int argc, char *argv[])
 			fatalx("%s: not owned by root or writable by group "
 			    "or other", PATH_CHROOT);
 		if (noaction) {
+			tls_pair_check(&conf);
 			fprintf(stderr, "configuration OK\n");
 			return (0);
 		}

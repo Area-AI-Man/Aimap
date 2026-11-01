@@ -13,6 +13,10 @@ aimap reads /etc/ssl/aimap.crt and /etc/ssl/private/aimap.key unless
 "tls certificate" and "tls key" in aimap.conf name others. See
 aimap.conf(5).
 
+"rcctl reload aimap" runs "aimap -n" first, so it fails, and aimap keeps
+the certificate and key it is using, if the new pair does not load or
+does not match.
+
 Accounts
 ========
 

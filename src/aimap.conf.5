@@ -321,9 +321,20 @@ The default is
 .It Ic tls key Ar path
 The TLS private key, which must be owned by root and have no
 permissions beyond 0740.
-A key that fails this check is not loaded, and a warning is logged.
 The default is
 .Pa /etc/ssl/private/aimap.key .
+.Pp
+The certificate and key are read at startup and on
+.Dv SIGHUP ,
+and must both load and match.
+If they do not,
+.Xr aimap 8
+does not start, or after
+.Dv SIGHUP
+logs a warning and keeps the certificate and key it was using.
+New connections are given the certificate in use, so a change to
+either file takes effect only on
+.Dv SIGHUP .
 .It Ic userbase Ar path
 The userbase file; see
 .Sx Credentials and userbase files .
