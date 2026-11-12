@@ -1,0 +1,148 @@
+#
+# aimap.conf example, see aimap.conf(5) for the full directive list.
+#
+# This file is installed read-only at /usr/local/share/examples/aimap/
+# aimap.conf (matching the OpenBSD ports convention for sample configs,
+# see ports(7) and the @sample PLIST keyword), it is NOT read by aimap
+# itself. To use it, copy it to /etc/aimap.conf and edit as needed.
+#
+# aimap.conf must be owned by root (or the user running aimap) and must
+# NOT be group-writable or group-executable, nor accessible by others at
+# all. World-readable trips people up more often, since it's easy to
+# forget: check_file_secrecy() (parse.y) rejects a world-readable file
+# too, not just a writable one.
+# A plain "cp" or "tee" leaves the copy at the default umask (typically
+# 644, world-readable), which aimap will then refuse to start against
+# ("group writable or world read/writable"). Set permissions explicitly:
+#
+#	install -o root -g wheel -m 600 \
+#	    /usr/local/share/examples/aimap/aimap.conf /etc/aimap.conf
+#
+# (or, after copying some other way: doas chown root:wheel /etc/aimap.conf
+# && doas chmod 600 /etc/aimap.conf)
+#
+
+# Listen on all IPv4 and IPv6 interfaces: cleartext/STARTTLS on port 143,
+# implicit TLS (RFC 8314) on port 993. Both listeners must share the same
+# address. These are also the defaults if "listen on" is omitted entirely.
+listen on * port 143
+listen on * tls port 993
+
+# The address may also be "0.0.0.0" (all IPv4 interfaces), "::" (all IPv6
+# interfaces), or a single literal IPv4/IPv6 address. Hostnames are not
+# accepted. "*" binds two sockets per listener, one of each family, as
+# httpd.conf(5)'s "*" does. For example, IPv4 only:
+#listen on 0.0.0.0 port 143
+#listen on 0.0.0.0 tls port 993
+
+# Mail spool root, chrooted into by the per-session store child.
+# Defaults to /var/mail/aimap.
+#spool "/var/mail/aimap"
+
+# Credentials file: a table(5) line per user, "username bcrypt-hash",
+# see aimap.conf(5). smtpd(8) can use it as an auth
+# table. Defaults to /etc/aimap/credentials.
+#credentials "/etc/aimap/credentials"
+
+# Userbase file: a table(5) line per user, "username uid:gid:maildir",
+# the maildir an absolute path under the spool. smtpd(8) can use it as
+# a userbase table. Read at each login. Defaults to /etc/aimap/userbase.
+#userbase "/etc/aimap/userbase"
+
+# TLS certificate and private key. Default to /etc/ssl/aimap.crt and
+# /etc/ssl/private/aimap.key respectively. The key must be owned by
+# root (uid 0 specifically -- unlike aimap.conf itself, this check does
+# not accept the current user) and mode 0740 or stricter.
+#tls certificate "/etc/ssl/aimap.crt"
+#tls key "/etc/ssl/private/aimap.key"
+
+# Largest message aimap will read from disk while deriving BODYSTRUCTURE
+# or a MIME part-addressed BODY[<part>] fetch, see aimap.conf(5). Must be
+# between 12000 and 1073741824 (1 GiB) bytes. Defaults to 41943040
+# (40 MiB, sized off Gmail's documented attachment limit plus base64
+# encoding overhead, see the BODYSTRUCTURE_READ_DEFAULT comment in
+# aimap.h for the full rationale). Uncomment and adjust if your mail
+# routinely carries larger attachments than that.
+attachment max 41943040
+
+# Largest message a client may upload with APPEND, see aimap.conf(5). Must be
+# between 1 and 1073741824 (1 GiB) bytes. Defaults to 36700160 (35 MiB),
+# the same as smtpd.conf(5)'s max-message-size default, so a message the
+# local MTA accepts can also be saved by a client. It may not exceed
+# attachment max above, or aimap refuses the configuration.
+#append max 36700160
+
+# How often a session in IDLE rechecks its selected mailbox. aimap does
+# not get an event when mail arrives, so IDLE is served by polling: new
+# mail is announced within one interval, whether it was delivered by an
+# external MTA or by another IMAP session. Most polls cost two stat(2)
+# calls and no lock, so a short interval is cheap. Must be 1-300 seconds,
+# or 0 to disable pushing entirely (an IDLEing session is then told
+# nothing until it sends DONE). Defaults to 5.
+#idle poll 5
+
+# How long a connection may go without authenticating before aimap
+# closes it. Every accepted connection costs two processes (a
+# listener-worker and an auth-worker) until it logs in, and a connection
+# that completes TCP and then says nothing would otherwise hold them for
+# ever, so a few dozen silent connections can reach the "startups full"
+# limit below and lock everyone else out. RFC 9051 section 5.4 permits
+# this timer explicitly: "servers are allowed to use a shortened
+# pre-authentication timer to protect themselves from Denial-of-Service
+# attacks". The timer is cancelled the moment a session authenticates,
+# so it never applies to an established session, and this is NOT the
+# post-authentication autologout that the same RFC section puts a 30
+# minute floor under; aimap has no such timer. Must be 1-3600 seconds,
+# or 0 to disable, which reopens the denial of service just described.
+# Defaults to 60.
+#login grace 60
+
+# How long a command waits for another session of the same user to
+# release a mailbox's index lock before answering NO [INUSE] (RFC 9051
+# section 7.1). Two clients on one account is ordinary, and a command
+# that changes a mailbox holds the lock for the whole change, so a client
+# marking a large mailbox read can hold it for the better part of a
+# minute. This is a safety net for a holder that is stuck, not a cure for
+# one that is slow: a deadline shorter than an ordinary command would
+# refuse ordinary concurrent use, and a client that does not retry INUSE
+# discards the user's change silently. Raise it for mailboxes much larger
+# than a hundred thousand messages. Must be 1-3600 seconds, or 0 to
+# disable the bound (an unbounded wait). Defaults to 120.
+#lock timeout 120
+
+# The most sessions one account (one uid, gid and maildir in the
+# userbase file) may have open at once, from all its clients
+# together. A login past it is answered NO [LIMIT] (RFC 9051 section
+# 7.1) and the connection is closed; the client may log in again on a
+# new connection once one of the account's sessions has ended. Must be
+# 1-4096. Defaults to 8.
+#account sessions 8
+
+# The most connections open at once, logged in or not. A new connection
+# past it gets a BYE [UNAVAILABLE] greeting on port 143 and is closed;
+# on port 993 it is closed with nothing sent. C connections, L of them
+# not yet logged in, for A accounts need up to C + L + 2A processes and
+# as many descriptors in the parent, so raise kern.maxproc and the
+# login class's openfiles before raising this. The default fits
+# OpenBSD's defaults. Must be 1-4096. Defaults to 256.
+#connections max 256
+
+# Admission-control throttle on concurrent, not-yet-authenticated
+# connections, modeled on sshd_config(5)'s MaxStartups (see that
+# man page for the canonical description of this algorithm).
+# Below "begin" open connections, every new connection is
+# accepted normally. Between "begin" and "full", new connections
+# are refused with linearly increasing probability, starting at
+# "rate" percent at "begin" and reaching 100% at "full". At or
+# above "full", every new connection is refused outright, and answered
+# as for "connections max".
+# Defaults to sshd_config(5)'s own default, 10:30:100.
+#startups begin 10 rate 30 full 100
+
+# The most not-yet-authenticated connections from any one address, as
+# sshd_config(5)'s PerSourceMaxStartups, so one address cannot hold
+# every "startups" slot. Each IPv6 address counts on its own. Users
+# behind one NAT address share it; raise it for them, or set "none"
+# to turn it off. A refused connection is answered as for
+# "connections max". Must be 1-1000000 or none. Defaults to 5.
+#startups per-source 5
