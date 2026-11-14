@@ -726,9 +726,10 @@ static int
 part_type(const char *hdr, size_t hdrlen, int digest, char *boundary,
     size_t boundarysize, int *enc, int *subdigest)
 {
-	size_t	 vallen = 0, pos = 0;
-	char	*val = NULL, type[64], subtype[64], attr[64], value[256];
-	int	 kind, has_boundary = 0;
+	struct content_param	 p;
+	size_t			 vallen = 0, pos = 0;
+	char			*val = NULL, type[64], subtype[64];
+	int			 kind, has_boundary = 0;
 
 	*subdigest = 0;
 	if ((*enc = transfer_encoding(hdr, hdrlen)) == -1) {
@@ -750,27 +751,9 @@ part_type(const char *hdr, size_t hdrlen, int digest, char *boundary,
 		free(val);
 		return (PART_TEXT);
 	}
-	for (;;) {
-		while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
-			pos++;
-		if (pos >= vallen || val[pos++] != ';')
-			break;
-		while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
-			pos++;
-		if (mime_read_token_or_qstring(val, vallen, &pos, attr,
-		    sizeof(attr)) == -1)
-			break;
-		while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
-			pos++;
-		if (pos >= vallen || val[pos++] != '=')
-			break;
-		while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
-			pos++;
-		if (mime_read_token_or_qstring(val, vallen, &pos, value,
-		    sizeof(value)) == -1)
-			break;
-		if (strcasecmp(attr, "boundary") == 0 &&
-		    strlcpy(boundary, value, boundarysize) < boundarysize)
+	while (content_type_param(val, vallen, &pos, &p)) {
+		if (strcasecmp(p.attr, "BOUNDARY") == 0 &&
+		    strlcpy(boundary, p.value, boundarysize) < boundarysize)
 			has_boundary = 1;
 	}
 	free(val);

@@ -11,7 +11,7 @@
 #include <limits.h>
 #include <stdint.h>
 
-#define AIMAP_VERSION	"0.0.6"
+#define AIMAP_VERSION	"0.0.7"
 
 #define AIMAP_USER	"_aimap"
 #define AIMAP_AUTH_USER	"_aimapauth"
@@ -460,8 +460,8 @@ struct imsg_fetch_section {
 	int		section_text;
 	int		fields_not;
 	int		has_partial;
-	uint32_t	partial_start;
-	uint32_t	partial_count;
+	uint64_t	partial_start;
+	uint64_t	partial_count;
 	char		part[SECTION_PART_MAX];
 	char		fields[HEADER_FIELDS_MAX];
 };

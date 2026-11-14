@@ -78,7 +78,7 @@ struct fetch_slot {
 	int		 literal8;
 	/* Only the origin is echoed back. */
 	int		 has_partial;
-	uint32_t	 partial_origin;
+	uint64_t	 partial_origin;
 	char		 label[HEADER_LABEL_MAX];
 };
 
@@ -135,6 +135,8 @@ struct session_cmd {
 	int			 search_alloc_failed;
 	int			 search_used_modseq;
 	uint64_t		 search_max_modseq;
+	uint64_t		 search_first_modseq;
+	uint64_t		 search_last_modseq;
 
 	/* The reply IDLE or NOOP owes after the refresh. */
 	const char		*refresh_status;
@@ -160,6 +162,8 @@ struct session_cmd {
 	struct imsg_mbox_expunged *move_expunged;
 	uint32_t		 move_expunged_n;
 	uint32_t		 move_expunged_cap;
+	uint32_t		 move_exists;
+	int			 move_exists_held;
 
 	uint32_t		*store_modified;
 	uint32_t		 store_modified_n;

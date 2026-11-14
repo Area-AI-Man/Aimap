@@ -64,6 +64,7 @@ static int	 search_program_parse(char *, struct search_node *, uint32_t *,
 static int	 parse_search_return_opts(char **, uint32_t *, const char **);
 static int	 read_search_charset(char **, char *, size_t);
 static void	 search_saved_clear(struct session *, uint32_t);
+static uint64_t	 search_result_modseq(const struct session_cmd *);
 
 static int
 parse_search_date(const char *s, int64_t *out)
@@ -911,8 +912,28 @@ session_handle_mbox_search_match(struct session *s,
 	s->cmd.search_matches[s->cmd.search_nmatches++] = s->cmd.cmd_by_uid ?
 	    m->uid : m->seqno;
 
+	if (s->cmd.search_nmatches == 1)
+		s->cmd.search_first_modseq = m->modseq;
+	s->cmd.search_last_modseq = m->modseq;
 	if (m->modseq > s->cmd.search_max_modseq)
 		s->cmd.search_max_modseq = m->modseq;
+}
+
+static uint64_t
+search_result_modseq(const struct session_cmd *c)
+{
+	uint32_t	o = c->search_return_opts;
+
+	if ((o & (SEARCH_RETURN_ALL | SEARCH_RETURN_COUNT)) ||
+	    !(o & (SEARCH_RETURN_MIN | SEARCH_RETURN_MAX)))
+		return (c->search_max_modseq);
+	if (!(o & SEARCH_RETURN_MAX))
+		return (c->search_first_modseq);
+	if (!(o & SEARCH_RETURN_MIN))
+		return (c->search_last_modseq);
+	if (c->search_first_modseq > c->search_last_modseq)
+		return (c->search_first_modseq);
+	return (c->search_last_modseq);
 }
 
 #define SEARCH_RESP_PREFIX_MAX	256
@@ -986,7 +1007,7 @@ session_finish_search(struct session *s, struct imsg_mbox_result *res)
 
 	if (s->cmd.search_used_modseq && s->cmd.search_nmatches > 0)
 		line_append(buf, bufsize, &len, " MODSEQ %llu",
-		    (unsigned long long)s->cmd.search_max_modseq);
+		    (unsigned long long)search_result_modseq(&s->cmd));
 
 	line_append(buf, bufsize, &len, "\r\n");
 	session_write(s, buf, len);

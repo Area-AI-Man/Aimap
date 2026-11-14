@@ -690,6 +690,7 @@ session_finish_copy_or_move(struct session *s,
 	uint32_t	 i;
 	size_t		 listsize, textsize;
 	char		 reply[48], *srcbuf, *destbuf, *text, fallback[64];
+	char		 exists[32];
 	int		 truncated, n, sent;
 
 	cmdname = s->cmd.cmd_is_move ?
@@ -761,6 +762,11 @@ session_finish_copy_or_move(struct session *s,
 			for (i = 0; i < s->cmd.move_expunged_n; i++)
 				session_send_expunge_response(s,
 				    &s->cmd.move_expunged[i]);
+			if (s->cmd.move_exists_held) {
+				snprintf(exists, sizeof(exists), "%u EXISTS",
+				    s->cmd.move_exists);
+				session_untagged(s, exists);
+			}
 		} else if (sent)
 			return;
 	}

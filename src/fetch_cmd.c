@@ -42,8 +42,8 @@ static size_t		 section_part_len(const char *);
 static int		 section_part_copy(const char *, size_t,
 		    struct fetch_atts *, char *);
 static int		 section_text_kind(const char *, const char *, size_t);
-static int		 parse_partial_suffix(const char *, int *, uint32_t *,
-		    uint32_t *);
+static int		 parse_partial_suffix(const char *, int *, uint64_t *,
+		    uint64_t *);
 static int		 fetch_section_add(struct fetch_atts *,
 		    const struct imsg_fetch_section *, const char *);
 static int		 parse_body_peek_section_tok(const char *,
@@ -387,10 +387,10 @@ section_text_kind(const char *s, const char *close, size_t n)
 
 static int
 parse_partial_suffix(const char *s, int *has_partial_out,
-    uint32_t *start_out, uint32_t *count_out)
+    uint64_t *start_out, uint64_t *count_out)
 {
-	unsigned long	 start, count;
 	const char	*p;
+	long long	 start, count;
 	char		*end;
 
 	*has_partial_out = 0;
@@ -407,21 +407,21 @@ parse_partial_suffix(const char *s, int *has_partial_out,
 	if (*p < '0' || *p > '9')
 		return (-1);
 	errno = 0;
-	start = strtoul(p, &end, 10);
-	if (errno != 0 || start > UINT32_MAX || *end != '.')
+	start = strtoll(p, &end, 10);
+	if (errno != 0 || *end != '.')
 		return (-1);
 	p = end + 1;
 
 	if (*p < '0' || *p > '9')
 		return (-1);
 	errno = 0;
-	count = strtoul(p, &end, 10);
-	if (errno != 0 || count > UINT32_MAX || *end != '>' || end[1] != '\0')
+	count = strtoll(p, &end, 10);
+	if (errno != 0 || count == 0 || *end != '>' || end[1] != '\0')
 		return (-1);
 
 	*has_partial_out = 1;
-	*start_out = (uint32_t)start;
-	*count_out = (uint32_t)count;
+	*start_out = (uint64_t)start;
+	*count_out = (uint64_t)count;
 	return (0);
 }
 
@@ -447,7 +447,7 @@ parse_body_peek_section_tok(const char *bracket_start, struct fetch_atts *fa,
 {
 	struct imsg_fetch_section	 rec;
 	const char			*close;
-	uint32_t			 start, count;
+	uint64_t			 start, count;
 	size_t				 n;
 	int				 kind, has_partial;
 
@@ -861,8 +861,8 @@ session_send_fetch_body(struct session *s, const struct fetch_slot *slot,
 	line_append(buf, sizeof(buf), &len, "%s%s[%s]", need_sp ? " " : "",
 	    item, slot->label);
 	if (slot->has_partial)
-		line_append(buf, sizeof(buf), &len, "<%u>",
-		    slot->partial_origin);
+		line_append(buf, sizeof(buf), &len, "<%llu>",
+		    (unsigned long long)slot->partial_origin);
 	line_append(buf, sizeof(buf), &len, " %s{%llu}\r\n",
 	    slot->literal8 ? "~" : "", (unsigned long long)slot->len);
 	session_write(s, buf, len);
@@ -949,8 +949,8 @@ session_send_fetch_sections(struct session *s, int need_sp)
 		line_append(buf, sizeof(buf), &len, "%sBODY[%s]",
 		    need_sp ? " " : "", slot->label);
 		if (slot->has_partial)
-			line_append(buf, sizeof(buf), &len, "<%u>",
-			    slot->partial_origin);
+			line_append(buf, sizeof(buf), &len, "<%llu>",
+			    (unsigned long long)slot->partial_origin);
 		line_append(buf, sizeof(buf), &len, " {%u}\r\n", slot->hdr_len);
 		session_write(s, buf, len);
 		if (slot->hdr_len > 0)
@@ -1064,7 +1064,7 @@ session_send_fetch_response(struct session *s,
 		}
 		session_send_fetch_sections(s, need_sp);
 		session_write(s, ")\r\n", 3);
-	} else {
+	} else if (need_sp) {
 		line_append(buf, sizeof(buf), &len, ")");
 		session_untagged(s, buf);
 	}
@@ -1103,7 +1103,7 @@ session_send_store_fetch_response(struct session *s,
 
 	line_append(buf, sizeof(buf), &len, "%u FETCH (FLAGS (%s)",
 	    meta->seqno, meta->flags);
-	if (s->cmd.cmd_by_uid)
+	if (s->cmd.cmd_by_uid || s->condstore_enabled)
 		line_append(buf, sizeof(buf), &len, " UID %u", meta->uid);
 	if (s->condstore_enabled)
 		line_append(buf, sizeof(buf), &len, " MODSEQ (%llu)",

@@ -523,6 +523,8 @@ handle_mbox_copy(struct imsg_mbox_copy *req, const struct seq_range *ranges,
 	    !commit_copy_messages(ss, dfd, cm.destidx, staged, nstaged)))
 		ok = 0;
 	if (ok) {
+		if (!cm.cross_mailbox)
+			(void)view_sync(ss, cm.destidx, 1);
 		cm.result.count = (uint32_t)nstaged;
 		cm.result.uidvalidity = cm.destidx->uidvalidity;
 		cm.result.highestmodseq = cm.srcidx->highestmodseq;
@@ -810,6 +812,8 @@ handle_mbox_move(struct imsg_mbox_copy *req, const struct seq_range *ranges,
 	if (!cm.cross_mailbox) {
 		if (!move_same_mailbox(req, vr, nvr, cm.srcidx, &nmoved, ss))
 			ok = 0;
+		else
+			(void)view_sync(ss, cm.srcidx, 1);
 	} else if (!move_cross_mailbox(req, vr, nvr, &cm, &nmoved, ss))
 		ok = 0;
 

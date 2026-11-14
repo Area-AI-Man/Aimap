@@ -349,6 +349,12 @@ session_store_dispatch(int fd, short event, void *arg)
 			if (!recv_fixed(&imsg, &u.exists, sizeof(u.exists),
 			    "IMSG_MBOX_VIEW_EXISTS"))
 				break;
+			if (s->state == SESSION_COPYING &&
+			    s->cmd.move_expunged_n > 0) {
+				s->cmd.move_exists = u.exists.exists;
+				s->cmd.move_exists_held = 1;
+				break;
+			}
 			snprintf(buf, sizeof(buf), "%u EXISTS",
 			    u.exists.exists);
 			session_untagged(s, buf);

@@ -206,6 +206,12 @@ struct content_type {
 	int	has_boundary;
 };
 
+struct content_param {
+	char	attr[BODYSTRUCTURE_MAX];
+	char	value[BODYSTRUCTURE_MAX];
+	int	toolong;
+};
+
 struct mime_part {
 	const char	*hdr;
 	const char	*body;
@@ -352,13 +358,15 @@ int	 build_envelope(int, const char *, char **, uint32_t *);
 int	 find_header_body_split(const char *, size_t, size_t *);
 int	 mime_read_token_or_qstring(const char *, size_t, size_t *,
 		    char *, size_t);
+int	 content_type_param(const char *, size_t, size_t *,
+		    struct content_param *);
 void	 parse_content_type(const char *, size_t, struct content_type *);
 int	 content_type_params(const char *, size_t, char *, size_t, size_t *);
 int	 split_multipart(const char *, size_t, const char *,
 		    size_t *, size_t *, int *, int);
 int	 build_bodystructure(int, const char *, char **, uint32_t *);
 int	 parse_section_part(const char *, int *, int);
-void	 partial_range(int, uint32_t, uint32_t, uint64_t *, uint64_t *);
+void	 partial_range(int, uint64_t, uint64_t, uint64_t *, uint64_t *);
 int	 extract_mime_part(int, const struct imsg_parser_req *,
 		    uint64_t *, uint64_t *);
 int	 extract_binary_part(int, const struct imsg_parser_req *, int,

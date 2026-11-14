@@ -49,11 +49,11 @@ static int		 hdr_next_field(const char *, size_t, size_t *,
 static int		 filter_header_fields(const char *, size_t,
 		    const char *, int, char *, size_t *);
 static int		 mime_is_tspecial(char);
+static int		 mime_read_value(const char *, size_t, size_t *, char *,
+		    size_t, size_t *);
 static void		 mime_str_upper(char *);
 static int		 content_type_value(const char *, size_t,
 		    struct content_type *, char **, size_t *, size_t *);
-static int		 content_type_param(const char *, size_t, size_t *,
-		    char *, size_t, char *, size_t);
 static int		 find_mime_part(int, const struct mime_part *,
 		    const int *, int, struct mime_part *);
 static int		 flag_append(char *, size_t, int *, const char *);
@@ -714,9 +714,9 @@ mime_is_tspecial(char c)
 	return (strchr("()<>@,;:\\\"/[]?=", c) != NULL);
 }
 
-int
-mime_read_token_or_qstring(const char *s, size_t len, size_t *pos,
-    char *out, size_t outsize)
+static int
+mime_read_value(const char *s, size_t len, size_t *pos, char *out,
+    size_t outsize, size_t *needp)
 {
 	size_t	 outlen = 0;
 	char	 c;
@@ -736,28 +736,43 @@ mime_read_token_or_qstring(const char *s, size_t len, size_t *pos,
 			/* NUL becomes a space, as it would end out. */
 			if (c == '\0')
 				c = ' ';
-			if (outlen + 1 >= outsize)
-				return (-1);
-			out[outlen++] = c;
+			if (outlen + 1 < outsize)
+				out[outlen] = c;
+			outlen++;
 			(*pos)++;
 		}
 		if (*pos >= len)
 			return (-1);	/* Unterminated quoted string. */
 		(*pos)++;
-		out[outlen] = '\0';
+		out[outlen < outsize ? outlen : outsize - 1] = '\0';
+		*needp = outlen;
 		return (0);
 	}
 
 	while (*pos < len && !mime_is_tspecial(s[*pos]) &&
 	    s[*pos] != ' ' && s[*pos] != '\t' &&
 	    (unsigned char)s[*pos] >= 0x20 && (unsigned char)s[*pos] != 0x7f) {
-		if (outlen + 1 >= outsize)
-			return (-1);
-		out[outlen++] = s[*pos];
+		if (outlen + 1 < outsize)
+			out[outlen] = s[*pos];
+		outlen++;
 		(*pos)++;
 	}
-	out[outlen] = '\0';
+	out[outlen < outsize ? outlen : outsize - 1] = '\0';
+	*needp = outlen;
 	if (outlen == 0)
+		return (-1);
+	return (0);
+}
+
+int
+mime_read_token_or_qstring(const char *s, size_t len, size_t *pos,
+    char *out, size_t outsize)
+{
+	size_t	 need;
+
+	if (mime_read_value(s, len, pos, out, outsize, &need) == -1)
+		return (-1);
+	if (need >= outsize)
 		return (-1);
 	return (0);
 }
@@ -806,11 +821,11 @@ content_type_value(const char *hdr, size_t hdrlen, struct content_type *ct,
 /*
  * Read the next attribute and value, and return 1.  Return 0 at the end.
  */
-static int
-content_type_param(const char *val, size_t vallen, size_t *posp, char *attr,
-    size_t attrsize, char *value, size_t valuesize)
+int
+content_type_param(const char *val, size_t vallen, size_t *posp,
+    struct content_param *p)
 {
-	size_t	 pos = *posp;
+	size_t	 pos = *posp, attrlen, valuelen;
 
 	while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
 		pos++;
@@ -819,8 +834,8 @@ content_type_param(const char *val, size_t vallen, size_t *posp, char *attr,
 	pos++;
 	while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
 		pos++;
-	if (mime_read_token_or_qstring(val, vallen, &pos, attr,
-	    attrsize) == -1)
+	if (mime_read_value(val, vallen, &pos, p->attr, sizeof(p->attr),
+	    &attrlen) == -1)
 		return (0);
 	while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
 		pos++;
@@ -829,10 +844,12 @@ content_type_param(const char *val, size_t vallen, size_t *posp, char *attr,
 	pos++;
 	while (pos < vallen && (val[pos] == ' ' || val[pos] == '\t'))
 		pos++;
-	if (mime_read_token_or_qstring(val, vallen, &pos, value,
-	    valuesize) == -1)
+	if (mime_read_value(val, vallen, &pos, p->value, sizeof(p->value),
+	    &valuelen) == -1)
 		return (0);
-	mime_str_upper(attr);
+	p->toolong = attrlen >= sizeof(p->attr) ||
+	    valuelen >= sizeof(p->value);
+	mime_str_upper(p->attr);
 	*posp = pos;
 	return (1);
 }
@@ -840,15 +857,15 @@ content_type_param(const char *val, size_t vallen, size_t *posp, char *attr,
 void
 parse_content_type(const char *hdr, size_t hdrlen, struct content_type *ct)
 {
-	size_t	 vallen, pos;
-	char	*val, attr[64], value[256];
+	struct content_param	 p;
+	size_t			 vallen, pos;
+	char			*val;
 
 	if (!content_type_value(hdr, hdrlen, ct, &val, &vallen, &pos))
 		return;
-	while (content_type_param(val, vallen, &pos, attr, sizeof(attr),
-	    value, sizeof(value))) {
-		if (strcasecmp(attr, "BOUNDARY") == 0 &&
-		    strlcpy(ct->boundary, value, sizeof(ct->boundary)) <
+	while (content_type_param(val, vallen, &pos, &p)) {
+		if (strcasecmp(p.attr, "BOUNDARY") == 0 &&
+		    strlcpy(ct->boundary, p.value, sizeof(ct->boundary)) <
 		    sizeof(ct->boundary))
 			ct->has_boundary = 1;
 	}
@@ -863,22 +880,23 @@ content_type_params(const char *hdr, size_t hdrlen, char *out,
     size_t outsize, size_t *outlen)
 {
 	struct content_type	 ct;
+	struct content_param	 p;
 	size_t			 vallen, pos;
-	char			*val, attr[64], value[256];
+	char			*val;
 	int			 n = 0, rc = 0;
 
 	if (!content_type_value(hdr, hdrlen, &ct, &val, &vallen, &pos))
 		return (envbuf_append_str(out, outsize, outlen,
 		    "(\"CHARSET\" \"US-ASCII\")"));
-	while (rc == 0 && content_type_param(val, vallen, &pos, attr,
-	    sizeof(attr), value, sizeof(value))) {
-		if (envbuf_append_str(out, outsize, outlen,
+	while (rc == 0 && content_type_param(val, vallen, &pos, &p)) {
+		if (p.toolong ||
+		    envbuf_append_str(out, outsize, outlen,
 		    n++ == 0 ? "(" : " ") == -1 ||
-		    envbuf_append_nstring(out, outsize, outlen, attr,
-		    strlen(attr)) == -1 ||
+		    envbuf_append_nstring(out, outsize, outlen, p.attr,
+		    strlen(p.attr)) == -1 ||
 		    envbuf_append(out, outsize, outlen, " ", 1) == -1 ||
-		    envbuf_append_nstring(out, outsize, outlen, value,
-		    strlen(value)) == -1)
+		    envbuf_append_nstring(out, outsize, outlen, p.value,
+		    strlen(p.value)) == -1)
 			rc = -1;
 	}
 	free(val);
@@ -1166,7 +1184,7 @@ section_text_range(const struct mime_part *mp, int text, const char **startp,
  * nothing.
  */
 void
-partial_range(int has_partial, uint32_t start, uint32_t count,
+partial_range(int has_partial, uint64_t start, uint64_t count,
     uint64_t *off, uint64_t *len)
 {
 	if (!has_partial)
