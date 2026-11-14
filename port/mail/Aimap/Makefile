@@ -1,6 +1,6 @@
 COMMENT =	privilege-separated IMAP4rev2 server written by Claude AI
 
-VERSION =	0.0.2
+VERSION =	0.0.7
 DISTNAME =	aimap-${VERSION}
 
 CATEGORIES =	mail
